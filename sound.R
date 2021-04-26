@@ -8,20 +8,25 @@ library(caTools)
 library(rpart)
 library(rpart.plot)
 library(randomForest)
-library(warbleR)
-library(mice)
+#library(warbleR)
+#library(mice)
 library(xgboost)
 library(e1071)
 
+# 函数 ----------------------------------------------------------------------
+
+#根据每行的文件名计算返回每个音频文件的所需属性:"sound.files", "selec" ,"duration",……
+
 specan3 <- function(X, bp = c(0,22), wl = 2048, threshold = 5, parallel = 1){
+  #校验各种数据类型
   # To use parallel processing: library(devtools), install_github('nathanvan/parallelsugar')
   if(class(X) == "data.frame") {if(all(c("sound.files", "selec", 
                                          "start", "end") %in% colnames(X))) 
   {
-    start <- as.numeric(unlist(X$start))
-    end <- as.numeric(unlist(X$end))
-    sound.files <- as.character(unlist(X$sound.files))
-    selec <- as.character(unlist(X$selec))
+    start <- as.numeric(unlist(X$start))#全是0
+    end <- as.numeric(unlist(X$end))#全是20
+    sound.files <- as.character(unlist(X$sound.files))#wav文件名
+    selec <- as.character(unlist(X$selec))#全是0
   } else stop(paste(paste(c("sound.files", "selec", "start", "end")[!(c("sound.files", "selec", 
                                                                         "start", "end") %in% colnames(X))], collapse=", "), "column(s) not found in data frame"))
   } else  stop("X is not a data frame")
@@ -131,44 +136,51 @@ specan3 <- function(X, bp = c(0,22), wl = 2048, threshold = 5, parallel = 1){
     return(c(duration, meanfreq, sd, median, Q25, Q75, IQR, skew, kurt, sp.ent, sfm, mode, 
              centroid, peakf, meanfun, minfun, maxfun, meandom, mindom, maxdom, dfrange, modindx))
   }))
-  
+  #一个文件生成一列属性值，一共length(start)列
   #change result names
+  #命名行名称
+  #print('77777')
   
   rownames(x) <- c("duration", "meanfreq", "sd", "median", "Q25", "Q75", "IQR", "skew", "kurt", "sp.ent", 
                    "sfm","mode", "centroid", "peakf", "meanfun", "minfun", "maxfun", "meandom", "mindom", "maxdom", "dfrange", "modindx")
+  #转置后前面加两列：文件名 ， selec
   x <- data.frame(sound.files, selec, as.data.frame(t(x)))
+  #补充新加的前两列的列名
   colnames(x)[1:2] <- c("sound.files", "selec")
+  #行名就是文件数length(start)
   rownames(x) <- c(1:nrow(x))
-  
+  #print(x$median)
   return(x)
 }
-
+#返回算好的每个音频文件的所需属性:"sound.files", "selec" ,"duration",……
 processFolder <- function(folderName) {
   # Start with empty data.frame.
   data <- data.frame()
   
   # Get list of files in the folder.
   list <- list.files(folderName, '\\.wav')
-  
+  print(length(list))
   # Add file list to data.frame for processing.
   for (fileName in list) {
-    row <- data.frame(fileName, 0, 0, 20)
-    data <- rbind(data, row)
+    row <- data.frame(fileName, 0, 0, 20)# 每行都是 文件名 0 0 20
+    data <- rbind(data, row)#行进行叠加
   }
   
   # Set column names.
-  names(data) <- c('sound.files', 'selec', 'start', 'end')
+  names(data) <- c('sound.files', 'selec', 'start', 'end')#设置列名（c为新建向量）
   
   # Move into folder for processing.
-  setwd(folderName)
+  setwd(folderName)#跳转工作路径
   
   # Process files.
+  #返回算好的每个音频文件的所需属性:"sound.files", "selec" ,"duration",……
   acoustics <- specan3(data, parallel=1)
   
   # Move back into parent folder.
   setwd('..')
-  
+  print('processFolder Done!')
   acoustics
+  
 }
 
 gender <- function(filePath) {
@@ -198,10 +210,17 @@ gender <- function(filePath) {
   
   predict(genderCombo, newdata=acoustics)
 }
+cal_F1<-function(TP,FP,FN){
+  P <- TP/(TP+FP)
+  R <- TP/(TP+FN)
+  return(2*P*R/(P+R))
+}
+
+# 用wav文件自己生成csv属性文件 -------------------------------------------------------
 
 # Load data
-males <- processFolder('male')
-females <- processFolder('female')
+males <- processFolder('man')
+females <- processFolder('woman')
 
 # Set labels.
 males$label <- 1
@@ -219,50 +238,94 @@ data$peakf <- NULL
 data <- data[complete.cases(data),]
 
 # Write out csv dataset.
-write.csv(data, file='voice.csv', sep=',', row.names=F)
+write.csv(data, file='baidu_bz.csv', row.names=F)
+
+test<-data
+train<-data
+# 导入已经生成好的音频属性数据集 ---------------------------------------------------------
+#注意需要把data的label变成factor
+#因为在原始的程序中，计算完data是将label转化了factor类型的，但是储存再读取之后不体现
+data <- read.csv('lecvoice_withname.csv')
+data$label<-as.factor(data$label)
+
+# 切分数据集 -----------------------------------------------------------------
 
 # Create a train and test set.
 set.seed(777)
+
 spl <- sample.split(data$label, 0.7)
 train <- subset(data, spl == TRUE)
 test <- subset(data, spl == FALSE)
+train_name <- train
+test_name <- test
+#save(test_name,file = "name.RData")
+write.csv(test_name,file="name.csv",row.names = F)
+train$sound.files <- NULL
+test$sound.files <- NULL
 
-# Build models.
+# 构建模型
+#R语言线性模型glm()logistic回归模型
 genderLog <- glm(label ~ ., data=train, family='binomial')
+#CART分类回归树
 genderCART <- rpart(label ~ ., data=train, method='class')
-prp(genderCART)
+prp(genderCART)#prp用于绘制决策树
+#随机森林
 genderForest <- randomForest(label ~ ., data=train)
+
+# baseline ----------------------------------------------------------------
+
 
 # Assume a basline model of always predicting male.
 # Accuracy: 0.50
 table(train$label)
-1107 / nrow(train)
+
 
 # Accuracy: 0.50
 table(test$label)
-475 / nrow(test)
+
+
+# Logistic Regression -----------------------------------------------------
+
 
 # Accuracy: 0.72
 predictLog <- predict(genderLog, type='response')
 table(train$label, predictLog >= 0.5)
-(814 + 777) / nrow(train)
+Ta <- table(train$label, predictLog >= 0.5)
+(Ta[1,1]+Ta[2,2])/ nrow(train)
 
 # Accuracy: 0.71
 predictLog2 <- predict(genderLog, newdata=test, type='response')
 table(test$label, predictLog2 >= 0.5)
-(339 + 335) / nrow(test)
+Ta <- table(test$label, predictLog2 >= 0.5)
+(Ta[1,2]+Ta[2,1])/ nrow(test)
+cal_F1(max(Ta[1,2],Ta[2,1]),Ta[1,1],Ta[2,2])
+
+# Classification and Regression Tree (CART) -------------------------------
+
 
 # Accuracy: 0.81
 predictCART <- predict(genderCART)
 predictCART.prob <- predictCART[,2]
 table(train$label, predictCART.prob >= 0.5)
-(858 + 941) / nrow(train)
+Ta <- table(train$label, predictCART.prob >= 0.5)
+(Ta[1,1]+Ta[2,2])/ nrow(train)
+#(3393 + 3359) / nrow(train)
 
 # Accuracy: 0.78
 predictCART2 <- predict(genderCART, newdata=test)
 predictCART2.prob <- predictCART2[,2]
 table(test$label, predictCART2.prob >= 0.5)
-(364 + 378) / nrow(test)
+Ta <- table(test$label, predictCART2.prob >= 0.5)
+(Ta[1,1]+Ta[2,2])/ nrow(test)
+cal_F1(max(Ta[1,1],Ta[2,2]),Ta[1,2],Ta[2,1])
+(Ta[1,2]+Ta[2,1])/ nrow(test)
+cal_F1(max(Ta[1,2],Ta[2,1]),Ta[1,1],Ta[2,2])
+#(1403+1465) / nrow(test)
+#cal_F1(1465,397,335)
+
+
+# Random Forest ----------------------------------------------------------------------
+
 
 # Accuracy: 1
 predictForest <- predict(genderForest, newdata=train)
@@ -271,7 +334,14 @@ table(train$label, predictForest)
 # Accuracy: 0.86
 predictForest <- predict(genderForest, newdata=test)
 table(test$label, predictForest)
-(410 + 409) / nrow(test)
+Ta <-table(test$label, predictForest)
+(Ta[1,1]+Ta[2,2])/ nrow(test)
+cal_F1(max(Ta[1,1],Ta[2,2]),Ta[1,2],Ta[2,1])
+(Ta[1,2]+Ta[2,1])/ nrow(test)
+cal_F1(max(Ta[1,2],Ta[2,1]),Ta[1,1],Ta[2,2])
+#save(predictForest,file = "forest.RData")
+#(1678 + 1700) / nrow(test)
+#cal_F1(1700,120,97)
 
 # Tune random-forest and return best model.
 # Accuracy: 0.87
@@ -279,21 +349,40 @@ set.seed(777)
 genderTunedForest <- tuneRF(train[, -21], train[, 21], stepFactor=.5, doBest=TRUE)
 predictForest <- predict(genderTunedForest, newdata=test)
 table(test$label, predictForest)
-(412 + 416) / nrow(test)
+Ta <-table(test$label, predictForest)
+(Ta[1,1]+Ta[2,2])/ nrow(test)
+cal_F1(max(Ta[1,1],Ta[2,2]),Ta[1,2],Ta[2,1])
+(Ta[1,2]+Ta[2,1])/ nrow(test)
+cal_F1(max(Ta[1,2],Ta[2,1]),Ta[1,1],Ta[2,2])
+#(1680 + 1703) / nrow(test)
+#cal_F1(1703,120,97)
+# svm ---------------------------------------------------------------------
+
 
 # Try svm (gamma and cost determined from tuning).
 set.seed(777)
-genderSvm <- svm(label ~ ., data=train, gamma=0.21, cost=8)
+genderSvm <- svm(as.factor(label) ~ ., data=train, gamma=0.21, cost=8)
 
 # Accuracy: 0.96
 predictSvm <- predict(genderSvm, train)
 table(predictSvm, train$label)
-(1076+1058)/nrow(train)
+Ta <-table(predictSvm, train$label)
+(Ta[1,1]+Ta[2,2])/ nrow(train)
+#(4186+4187 )/nrow(train)
 
 # Accuracy: 0.85
 predictSvm <- predict(genderSvm, test)
 table(predictSvm, test$label)
-(423+386)/nrow(test)
+Ta <-table(predictSvm, test$label)
+(Ta[1,1]+Ta[2,2])/ nrow(test)
+cal_F1(max(Ta[1,1],Ta[2,2]),Ta[1,2],Ta[2,1])
+(Ta[1,2]+Ta[2,1])/ nrow(test)
+cal_F1(max(Ta[1,2],Ta[2,1]),Ta[1,1],Ta[2,2])
+#(1654+1652)/nrow(test)
+#cal_F1(1654,148,146)
+
+# 注释掉的实验 ------------------------------------------------------------------
+
 
 # With no tuning, Accuracy: 0.84
 #predictSvm <- predict(genderSvm, train)
@@ -369,42 +458,69 @@ table(predictSvm, test$label)
 #predictBoosted <- predict(genderBoosted, newdata=test)
 #confusionMatrix(predictBoosted, test$label)
 
+
+# XGBoost -----------------------------------------------------------------
+
+
 # Try XGBoost.
 # Accuracy: 1
 trainx <- sapply(train, as.numeric)
 trainx[,21] <- trainx[,21] - 1
 set.seed(777)
 genderXG <- xgboost(data = trainx[,-21], label = trainx[,21], eta=0.2, nround = 500, subsample = 0.5, colsample_bytree = 0.5, objective = "binary:logistic")
-results <- predict(genderXG, trainx)
+results <- predict(genderXG, trainx[,-21])
 table(trainx[,21], results >= 0.5)
+Ta <-table(trainx[,21], results >= 0.5)
+(Ta[1,1]+Ta[2,2])/ nrow(train)
 
+#(6999+6999)/nrow(train)
 # Accuracy: 0.87
 testx <- sapply(test, as.numeric)
 testx[,21] <- testx[,21] - 1
-results <- predict(genderXG, testx)
+results <- predict(genderXG, testx[,-21])
 table(testx[,21], results >= 0.5)
-(414 + 413) / nrow(test)
+Ta <-table(testx[,21], results >= 0.5)
+(Ta[1,1]+Ta[2,2])/ nrow(test)
+cal_F1(max(Ta[1,1],Ta[2,2]),Ta[1,2],Ta[2,1])
+(Ta[1,2]+Ta[2,1])/ nrow(test)
+cal_F1(max(Ta[1,2],Ta[2,1]),Ta[1,1],Ta[2,2])
+#(1711 + 1736) / nrow(test)
+#cal_F1(1736,64,89)
+
+# 堆叠技术（svm,tuned random forest,xgboost） -----------------------------------
+
 
 # Try stacking models in an ensemble.
-results1 <- predict(genderSvm, newdata=test)
-results2 <- predict(genderTunedForest, newdata=test)
-results3 <- factor(as.numeric(predict(genderXG, testx) >= 0.5), labels = c('male', 'female'))
-combo <- data.frame(results1, results2, results3, y = test$label)
-
-# Accuracy: 0.89
-set.seed(777)
-genderStacked <- tuneRF(combo[,-4], combo[,4], stepFactor=.5, doBest=TRUE)
-predictStacked <- predict(genderStacked, newdata=combo)
-table(predictStacked, test$label)
-
-# Accuracy: 1
 results1 <- predict(genderSvm, newdata=train)
 results2 <- predict(genderTunedForest, newdata=train)
-results3 <- factor(as.numeric(predict(genderXG, trainx) >= 0.5), labels = c('male', 'female'))
-combo <- data.frame(results1, results2, results3)
+results3 <- factor(as.numeric(predict(genderXG, trainx[,-21]) >= 0.5), labels = c('male', 'female'))
+combo <- data.frame(as.factor(results1), as.factor(results2), results3, y = train$label)
+#combo <- data.frame(as.numeric(results1), as.numeric(results2), as.numeric(results3), y = as.numeric(train$label))
+# Accuracy: 0.89
+set.seed(777)
+genderStacked <- tuneRF(combo[,-4], combo[,4], stepFactor=1, doBest=TRUE)
 predictStacked <- predict(genderStacked, newdata=combo)
 table(predictStacked, train$label)
-
+Ta <-table(predictStacked, train$label)
+(Ta[1,1]+Ta[2,2])/ nrow(train)
+#cal_F1(max(Ta[1,1],Ta[2,2]),Ta[1,2],Ta[2,1])
+#(6975 + 6978) / nrow(train)
+# Accuracy: 1
+results1 <- predict(genderSvm, newdata=test)
+results2 <- predict(genderTunedForest, newdata=test)
+results3 <- factor(as.numeric(predict(genderXG, testx[,-21]) >= 0.5), labels = c('male', 'female'))
+combo <- data.frame(as.factor(results1), as.factor(results2), results3)
+predictStacked <- predict(genderStacked, newdata=combo)
+table(predictStacked, test$label)
+Ta <-table(predictStacked, test$label)
+(Ta[1,1]+Ta[2,2])/ nrow(test)
+cal_F1(max(Ta[1,1],Ta[2,2]),Ta[1,2],Ta[2,1])
+(Ta[1,2]+Ta[2,1])/ nrow(test)
+cal_F1(max(Ta[1,2],Ta[2,1]),Ta[1,1],Ta[2,2])
+#save(predictStacked,file = "forest.RData")
+write.csv(predictStacked,file="stack.csv",row.names = F)
+#(1702 + 1724) / nrow(test)
+#cal_F1(1724,98,76)
 # trans <- processFolder('sanity')
 # trans$label <- c(2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 1, 1, 2)
 # trans$label <- factor(trans$label, labels=c('male', 'female'))
